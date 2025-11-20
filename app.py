@@ -2,112 +2,180 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import requests
-import time
 from datetime import datetime
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="PL Mobile Intelligence", layout="wide")
-st.title("📱 PL Predicciones: Corners & Tarjetas")
+st.set_page_config(page_title="PL Auto Fixtures", layout="wide")
+st.title("📅 Predicciones Premier League")
 
-# --- CARGA DE DATOS ---
+# --- 1. CARGA DE DATOS HISTÓRICOS (STATS) ---
 @st.cache_data(ttl=3600)
-def load_data():
-    # Datos históricos (CSV)
+def load_stats():
     url_csv = "https://www.football-data.co.uk/mmz4281/2425/E0.csv"
     try:
         df = pd.read_csv(url_csv)
-        # Limpieza básica
         cols = ['Date', 'HomeTeam', 'AwayTeam', 'Referee', 'FTHG', 'FTAG', 'HC', 'AC', 'HY', 'AY', 'HF', 'AF']
         df = df[cols].dropna()
         return df
     except:
         return pd.DataFrame()
 
-df = load_data()
+# --- 2. CARGA DEL CALENDARIO (FIXTURES) ---
+@st.cache_data(ttl=3600)
+def load_fixtures():
+    # Usamos FBRef para ver los partidos que vienen
+    url = "https://fbref.com/en/comps/9/schedule/Premier-League-Scores-and-Fixtures"
+    try:
+        dfs = pd.read_html(url)
+        # La tabla de calendario suele ser la primera
+        df_fix = dfs[0]
+        # Filtramos los que NO tienen resultado (Score es NaN), o sea, partidos futuros
+        upcoming = df_fix[df_fix['Score'].isna()].copy()
+        upcoming = upcoming[['Date', 'Home', 'Away']].head(15) # Tomamos los próximos 15
+        return upcoming
+    except:
+        return pd.DataFrame()
 
-if df.empty:
-    st.error("Error cargando datos. Intenta recargar la página.")
+df_stats = load_stats()
+df_fix = load_fixtures()
+
+if df_stats.empty:
+    st.error("Error cargando estadísticas históricas.")
     st.stop()
 
-# --- FUNCIONES ---
-def get_stats(team, df):
-    # Filtramos partidos del equipo
-    h = df[df['HomeTeam'] == team]
-    a = df[df['AwayTeam'] == team]
+# --- 3. DICCIONARIO DE TRADUCCIÓN ---
+# FBRef usa unos nombres y el CSV usa otros. Esto los unifica.
+name_map = {
+    "Manchester Utd": "Man United",
+    "Manchester City": "Man City",
+    "Nott'ham Forest": "Nott'm Forest",
+    "Sheffield Utd": "Sheffield United",
+    "Wolverhampton": "Wolves",
+    "Brighton": "Brighton",
+    "Tottenham": "Tottenham",
+    "West Ham": "West Ham",
+    "Newcastle Utd": "Newcastle",
+    "Luton Town": "Luton"
+}
+
+def normalize_name(name):
+    return name_map.get(name, name) # Si no está en la lista, devuelve el original
+
+# --- 4. INTERFAZ DE SELECCIÓN ---
+st.write("### ⚽ Próximos Partidos")
+
+if df_fix.empty:
+    st.warning("No se pudo cargar el calendario. Selección manual:")
+    teams = sorted(df_stats['HomeTeam'].unique())
+    home_team = st.selectbox("Local", teams)
+    away_team = st.selectbox("Visita", teams)
+else:
+    # Crear lista bonita para el desplegable
+    match_options = []
+    match_data = [] # Guardamos los datos reales para usarlos luego
     
-    # Promedio Corners (Local + Visitante)
-    corn_h = h['HC'].mean() if not h.empty else 0
-    corn_a = a['AC'].mean() if not a.empty else 0
-    avg_corn = (corn_h + corn_a) / 2 if (corn_h > 0 and corn_a > 0) else 4.5
+    for index, row in df_fix.iterrows():
+        h_raw = row['Home']
+        a_raw = row['Away']
+        date = row['Date']
+        
+        label = f"{date} | {h_raw} vs {a_raw}"
+        match_options.append(label)
+        match_data.append((h_raw, a_raw))
     
-    # Promedio Faltas
-    foul_h = h['HF'].mean() if not h.empty else 0
-    foul_a = a['AF'].mean() if not a.empty else 0
-    avg_foul = (foul_h + foul_a) / 2 if (foul_h > 0 and foul_a > 0) else 10.0
+    # EL DESPLEGABLE MÁGICO
+    selected_idx = st.selectbox("Selecciona la Jornada:", range(len(match_options)), format_func=lambda x: match_options[x])
     
-    return avg_corn, avg_foul
-
-def get_ref_stats(ref, df):
-    matches = df[df['Referee'] == ref]
-    if matches.empty: return 1.0 # Valor por defecto
+    # Obtener equipos seleccionados y traducirlos
+    raw_home, raw_away = match_data[selected_idx]
+    home_team = normalize_name(raw_home)
+    away_team = normalize_name(raw_away)
     
-    avg_cards = (matches['HY'].sum() + matches['AY'].sum()) / len(matches)
-    league_avg = (df['HY'].sum() + df['AY'].sum()) / len(df)
+    st.info(f"Analizando: **{home_team}** vs **{away_team}**")
+
+# --- 5. LÓGICA DE PREDICCIÓN (Tu algoritmo) ---
+
+def get_team_metrics(team, df):
+    # Filtramos partidos previos
+    games_h = df[df['HomeTeam'] == team]
+    games_a = df[df['AwayTeam'] == team]
     
-    # Factor de severidad
-    return avg_cards / league_avg
+    # Si el nombre no coincide exacto, intentamos búsqueda parcial
+    if games_h.empty and games_a.empty:
+        # Intento de rescate por si el nombre está mal escrito
+        team_options = df['HomeTeam'].unique()
+        matches = [t for t in team_options if team[:4] in t]
+        if matches:
+            team = matches[0]
+            games_h = df[df['HomeTeam'] == team]
+            games_a = df[df['AwayTeam'] == team]
+    
+    # Promedios
+    c_h = games_h['HC'].mean() if not games_h.empty else 4.5
+    c_a = games_a['AC'].mean() if not games_a.empty else 4.0
+    
+    f_h = games_h['HF'].mean() if not games_h.empty else 10.5
+    f_a = games_a['AF'].mean() if not games_a.empty else 10.5
+    
+    # Corners totales promedio del equipo
+    avg_corners = (c_h + c_a) / 2
+    avg_fouls = (f_h + f_a) / 2
+    
+    return avg_corners, avg_fouls
 
-# --- INTERFAZ MÓVIL ---
-teams = sorted(df['HomeTeam'].unique())
-refs = sorted(df['Referee'].unique())
+# Obtener stats
+c1, f1 = get_team_metrics(home_team, df_stats)
+c2, f2 = get_team_metrics(away_team, df_stats)
 
-st.write("### ⚽ Configurar Partido")
-col1, col2 = st.columns(2)
-home = col1.selectbox("Local", teams, index=0)
-away = col2.selectbox("Visita", teams, index=1)
-ref = st.selectbox("Árbitro", refs)
+# Selector de Árbitro (Aún manual porque no se sabe hasta el final)
+refs = sorted(df_stats['Referee'].unique())
+ref_idx = 0
+try:
+    # Intentar poner por defecto a Michael Oliver si existe (ejemplo)
+    ref_idx = refs.index('M Oliver')
+except:
+    pass
+referee = st.selectbox("Árbitro (Selecciona si lo sabes)", refs, index=ref_idx)
 
-if home == away:
-    st.warning("Selecciona equipos distintos")
-    st.stop()
+# Obtener dureza árbitro
+ref_data = df_stats[df_stats['Referee'] == referee]
+ref_strictness = 1.0
+if not ref_data.empty:
+    cards_pg = (ref_data['HY'].sum() + ref_data['AY'].sum()) / len(ref_data)
+    league_avg_cards = (df_stats['HY'].sum() + df_stats['AY'].sum()) / len(df_stats)
+    ref_strictness = cards_pg / league_avg_cards
 
-# --- CÁLCULOS ---
-c_h, f_h = get_stats(home, df)
-c_a, f_a = get_stats(away, df)
-ref_factor = get_ref_stats(ref, df)
+# --- 6. CÁLCULOS Y RESULTADOS ---
 
-# Predicción Corners (Modelo Simple Ponderado)
-# Sumamos promedios + Factor Liga
-pred_corners = c_h + c_a + 1.5 
+# Predicción Matemática
+pred_corners = c1 + c2 + 1.0 # Ajuste base liga
+pred_cards = ((f1 + f2) / 6.5) * ref_strictness
 
-# Predicción Tarjetas
-# (Faltas Local + Faltas Visita) / 6.5 * Severidad Árbitro
-pred_cards = ((f_h + f_a) / 6.5) * ref_factor
+# Simulación
+sim_corn = np.random.poisson(pred_corners, 2000)
+prob_over_9 = (sim_corn > 9.5).mean() * 100
 
-# Simulación (Montecarlo)
-sim_c = np.random.poisson(pred_corners, 1000)
-prob_over_9 = (sim_c > 9.5).mean() * 100
+sim_card = np.random.poisson(pred_cards, 2000)
+prob_over_4 = (sim_card > 4.5).mean() * 100
 
-sim_t = np.random.poisson(pred_cards, 1000)
-prob_over_4 = (sim_t > 4.5).mean() * 100
-
-# --- RESULTADOS ---
 st.divider()
-st.header("📊 Resultados")
+t1, t2 = st.tabs(["🚩 Córners", "🟨 Tarjetas"])
 
-tab1, tab2 = st.tabs(["🚩 Corners", "🟨 Tarjetas"])
-
-with tab1:
-    st.metric("Total Esperado", f"{pred_corners:.2f}")
-    st.metric("Probabilidad +9.5", f"{prob_over_9:.1f}%")
-    if prob_over_9 > 60:
-        st.success("Alta probabilidad de Corners")
+with t1:
+    c_col1, c_col2 = st.columns(2)
+    c_col1.metric("Línea Esperada", f"{pred_corners:.2f}")
+    c_col2.metric("Probabilidad +9.5", f"{prob_over_9:.1f}%")
+    
+    if prob_over_9 > 65:
+        st.success(f"🔥 **ALTA PROBABILIDAD:** El modelo sugiere OVER en {home_team} vs {away_team}.")
+    elif prob_over_9 < 40:
+        st.error("🧊 **BAJA PROBABILIDAD:** Partido tiende al Under.")
     else:
-        st.info("Partido normal/bajo en corners")
+        st.info("⚖️ **NEUTRO:** No hay valor claro.")
 
-with tab2:
-    st.metric("Tarjetas Esperadas", f"{pred_cards:.2f}")
-    st.metric("Probabilidad +4.5", f"{prob_over_4:.1f}%")
-    st.write(f"Severidad Árbitro: x{ref_factor:.2f}")
-    if ref_factor > 1.15:
-        st.error("¡Árbitro muy estricto!")
+with t2:
+    k_col1, k_col2 = st.columns(2)
+    k_col1.metric("Tarjetas Est.", f"{pred_cards:.2f}")
+    k_col2.metric("Prob +4.5", f"{prob_over_4:.1f}%")
+    
+    st.caption(f"Factor Árbitro ({referee}): x{ref_strictness:.2f}")

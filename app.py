@@ -5,197 +5,243 @@ import requests
 from io import StringIO
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="PL Fixtures Pro", layout="wide")
-st.title("📅 Predicciones Premier League")
+st.set_page_config(page_title="PL Pro Predictor", layout="wide")
+st.title("⚽ Premier League: Inteligencia Deportiva")
 
 # --- 1. CARGA DE DATOS HISTÓRICOS (STATS) ---
 @st.cache_data(ttl=3600)
 def load_stats():
-    # CSV Histórico de Football-Data.co.uk
-    url_csv = "https://www.football-data.co.uk/mmz4281/2425/E0.csv"
+    # Base de datos de Football-Data.co.uk (Confiable para stats pasados)
+    url = "https://www.football-data.co.uk/mmz4281/2425/E0.csv"
     try:
-        # Usamos requests para bajarlo seguro
         headers = {"User-Agent": "Mozilla/5.0"}
-        r = requests.get(url_csv, headers=headers)
+        r = requests.get(url, headers=headers)
         r.raise_for_status()
-        
         data = StringIO(r.text)
         df = pd.read_csv(data)
-        
         cols = ['Date', 'HomeTeam', 'AwayTeam', 'Referee', 'FTHG', 'FTAG', 'HC', 'AC', 'HY', 'AY', 'HF', 'AF']
-        # Filtramos solo columnas que existan (evita errores si cambia el formato)
-        existing_cols = [c for c in cols if c in df.columns]
-        df = df[existing_cols].dropna()
-        return df
-    except Exception as e:
+        existing = [c for c in cols if c in df.columns]
+        return df[existing].dropna()
+    except:
         return pd.DataFrame()
 
-# --- 2. CARGA DEL CALENDARIO (FIXTURES) - VERSIÓN BLINDADA ---
+# --- 2. CARGA DEL CALENDARIO (FANTASY PREMIER LEAGUE API) ---
+# Esta API es oficial y nunca se bloquea.
 @st.cache_data(ttl=3600)
-def load_fixtures():
-    # URL de Fixtures de FBRef
-    url = "https://fbref.com/en/comps/9/schedule/Premier-League-Scores-and-Fixtures"
-    
-    # EL DISFRAZ: Headers completos de Chrome
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5"
-    }
-    
+def load_fixtures_official():
     try:
-        # 1. Petición directa con requests
-        response = requests.get(url, headers=headers, timeout=10)
-        response.raise_for_status() # Avisar si hay error 403/404
+        # 1. Obtener nombres de equipos (ID -> Nombre)
+        r_teams = requests.get("https://fantasy.premierleague.com/api/bootstrap-static/")
+        teams_data = r_teams.json()['teams']
+        id_to_name = {t['id']: t['name'] for t in teams_data}
         
-        # 2. Pandas lee el HTML texto
-        # 'match' busca una tabla que contenga la palabra "Score" para no equivocarse
-        dfs = pd.read_html(StringIO(response.text), match="Score")
-        df_fix = dfs[0]
+        # 2. Obtener partidos
+        r_fix = requests.get("https://fantasy.premierleague.com/api/fixtures/")
+        fixtures = r_fix.json()
         
-        # 3. Limpieza: Buscamos partidos sin goles (futuros)
-        # FBRef pone el Score vacío o NaN para partidos que no se han jugado
-        upcoming = df_fix[df_fix['Score'].isna()].copy()
-        
-        # Seleccionar columnas y limpiar
-        upcoming = upcoming[['Date', 'Home', 'Away']].dropna()
-        
-        return upcoming.head(15) # Devolvemos los próximos 15
-        
-    except Exception as e:
-        # Si falla, devolvemos vacío pero no rompemos la app
+        # 3. Filtrar partidos futuros
+        future_games = []
+        for f in fixtures:
+            if not f['finished'] and f['event'] is not None:
+                # Solo próxima jornada (aprox)
+                home_name = id_to_name.get(f['team_h'], "Unknown")
+                away_name = id_to_name.get(f['team_a'], "Unknown")
+                # Formato de fecha
+                kickoff = f['kickoff_time'][:10] 
+                future_games.append({
+                    "Date": kickoff,
+                    "Home": home_name,
+                    "Away": away_name
+                })
+                
+        return pd.DataFrame(future_games).head(15) # Solo los siguientes 15
+    except:
         return pd.DataFrame()
 
 df_stats = load_stats()
-df_fix = load_fixtures()
+df_fix = load_fixtures_official()
 
-if df_stats.empty:
-    st.error("⚠️ Error conectando con la base de datos de estadísticas.")
-    st.stop()
+# --- 3. UNIFICACIÓN DE NOMBRES (DICCIONARIO INTELIGENTE) ---
+# FPL llama "Spurs" a "Tottenham", el CSV lo llama "Tottenham", etc.
+def normalize_name(name):
+    name = name.lower()
+    mapping = {
+        "spurs": "Tottenham",
+        "tottenham": "Tottenham",
+        "man utd": "Man United",
+        "man united": "Man United",
+        "man city": "Man City",
+        "nott'm forest": "Nott'm Forest",
+        "nottingham": "Nott'm Forest",
+        "wolves": "Wolves",
+        "brighton": "Brighton",
+        "newcastle": "Newcastle",
+        "leicester": "Leicester",
+        "sheffield utd": "Sheffield United",
+        "west ham": "West Ham",
+        "luton": "Luton"
+    }
+    for k, v in mapping.items():
+        if k in name: return v
+    # Si no está en el mapa, intentar capitalizar
+    return name.title()
 
-# --- 3. DICCIONARIO DE NOMBRES ---
-name_map = {
-    "Manchester Utd": "Man United",
-    "Manchester City": "Man City",
-    "Nott'ham Forest": "Nott'm Forest",
-    "Sheffield Utd": "Sheffield United",
-    "Wolverhampton": "Wolves",
-    "Brighton": "Brighton",
-    "Tottenham": "Tottenham",
-    "West Ham": "West Ham",
-    "Newcastle Utd": "Newcastle",
-    "Luton Town": "Luton",
-    "Ipswich Town": "Ipswich",
-    "Leicester City": "Leicester"
-}
-
-def normalize(name):
-    return name_map.get(name, name)
-
-# --- 4. INTERFAZ ---
-st.write("### ⚽ Próximos Encuentros")
-
-# Lógica de selección inteligente
-home_team, away_team = None, None
+# --- 4. INTERFAZ DE SELECCIÓN ---
+st.write("### 📅 Próximos Partidos (Fuente: API Oficial)")
 
 if df_fix.empty:
-    st.warning("⚠️ Modo Manual (Calendario bloqueado temporalmente)")
+    st.error("Error conectando a la API. Usa el modo manual abajo.")
     teams = sorted(df_stats['HomeTeam'].unique())
-    c1, c2 = st.columns(2)
-    home_team = c1.selectbox("Local", teams, index=0)
-    away_team = c2.selectbox("Visita", teams, index=1)
+    home_input = st.selectbox("Local", teams)
+    away_input = st.selectbox("Visita", teams)
 else:
-    # Crear lista para el desplegable
+    # Crear lista desplegable
     options = []
-    raw_teams = []
+    for i, row in df_fix.iterrows():
+        options.append(f"{row['Date']} | {row['Home']} vs {row['Away']}")
     
-    for idx, row in df_fix.iterrows():
-        h_raw = row['Home']
-        a_raw = row['Away']
-        date = row['Date']
-        label = f"{date} | {h_raw} vs {a_raw}"
-        options.append(label)
-        raw_teams.append((h_raw, a_raw))
+    sel_idx = st.selectbox("Selecciona el encuentro:", range(len(options)), format_func=lambda x: options[x])
     
-    selected_idx = st.selectbox("Selecciona Jornada:", range(len(options)), format_func=lambda x: options[x])
-    
-    h_sel, a_sel = raw_teams[selected_idx]
-    home_team = normalize(h_sel)
-    away_team = normalize(a_sel)
-    
-    st.success(f"Analizando: **{home_team}** vs **{away_team}**")
+    # Obtener nombres y normalizarlos para buscar en la base de datos
+    raw_h = df_fix.iloc[sel_idx]['Home']
+    raw_a = df_fix.iloc[sel_idx]['Away']
+    home_input = normalize_name(raw_h)
+    away_input = normalize_name(raw_a)
 
-# --- 5. MOTOR DE PREDICCIÓN ---
-def get_team_metrics(team, df):
-    # Filtro flexible (busca si el nombre está contenido en el del CSV)
-    # Esto ayuda si 'Man City' no hace match con 'Manchester City'
-    games_h = df[df['HomeTeam'] == team]
-    games_a = df[df['AwayTeam'] == team]
-    
-    if games_h.empty and games_a.empty:
-        # Intento de búsqueda inteligente
-        possible = [t for t in df['HomeTeam'].unique() if team[:4] in t]
-        if possible:
-            team = possible[0]
-            games_h = df[df['HomeTeam'] == team]
-            games_a = df[df['AwayTeam'] == team]
+# --- 5. MOTOR DE ANÁLISIS PROFUNDO ---
 
-    # Stats Córners
-    c_h = games_h['HC'].mean() if not games_h.empty else 5.0
-    c_a = games_a['AC'].mean() if not games_a.empty else 4.5
-    
-    # Stats Faltas
-    f_h = games_h['HF'].mean() if not games_h.empty else 10.0
-    f_a = games_a['AF'].mean() if not games_a.empty else 10.0
-    
-    return (c_h + c_a)/2, (f_h + f_a)/2
+def analyze_match(h_team, a_team, df):
+    # Buscar equipos en el CSV (Búsqueda flexible)
+    # A veces el nombre normalizado no es idéntico, buscamos "contiene"
+    def get_df_team(name, side):
+        # Intento exacto
+        d = df[df[side] == name]
+        if not d.empty: return d
+        # Intento parcial
+        all_teams = df[side].unique()
+        matches = [t for t in all_teams if name[:4] in t]
+        if matches: return df[df[side] == matches[0]]
+        return pd.DataFrame()
 
-# Árbitro (Opcional)
+    h_data = get_df_team(h_team, 'HomeTeam')
+    a_data = get_df_team(a_team, 'AwayTeam')
+    
+    # SI no hay datos (ej. equipo recién ascendido sin partidos en CSV)
+    if h_data.empty or a_data.empty:
+        return None
+
+    # ESTADÍSTICAS CLAVE
+    # 1. Corners
+    hc_for = h_data['HC'].mean()      # Corners a favor Local
+    hc_ag = h_data['AC'].mean()       # Corners en contra Local (Concedidos)
+    ac_for = a_data['AC'].mean()      # Corners a favor Visita
+    ac_ag = a_data['HC'].mean()       # Corners en contra Visita (Concedidos)
+    
+    # 2. Tarjetas (Faltas como proxy de intensidad)
+    hf = h_data['HF'].mean()
+    af = a_data['AF'].mean()
+    
+    # 3. Lógica de Predicción
+    # Geometría: Ataque Local vs Defensa Visita + Ataque Visita vs Defensa Local
+    exp_corn_h = (hc_for + ac_ag) / 2 
+    exp_corn_a = (ac_for + hc_ag) / 2
+    total_corners = exp_corn_h + exp_corn_a * 1.05 # Factor corrector liga
+    
+    # Intensidad
+    total_fouls = hf + af
+    
+    return {
+        "h_stats": {"c_for": hc_for, "c_ag": hc_ag, "f": hf},
+        "a_stats": {"c_for": ac_for, "c_ag": ac_ag, "f": af},
+        "pred_corners": total_corners,
+        "pred_fouls": total_fouls
+    }
+
+analysis = analyze_match(home_input, away_input, df_stats)
+
+# Selector de Árbitro
+st.write("---")
+col_ref, col_extra = st.columns(2)
 refs = sorted(df_stats['Referee'].unique()) if 'Referee' in df_stats.columns else []
-referee = st.selectbox("Árbitro (Opcional)", refs) if refs else None
+sel_ref = col_ref.selectbox("Árbitro del partido:", refs)
 
-# Cálculos
-c1, f1 = get_team_metrics(home_team, df_stats)
-c2, f2 = get_team_metrics(away_team, df_stats)
-
-# Algoritmo
-pred_corners = c1 + c2 + 1.0 # Factor ajuste liga
-pred_cards = 3.5 # Base
+# Datos Árbitro
 ref_factor = 1.0
-
-if referee:
-    ref_d = df_stats[df_stats['Referee'] == referee]
+ref_avg = 3.8
+if not df_stats.empty and sel_ref:
+    ref_d = df_stats[df_stats['Referee'] == sel_ref]
     if not ref_d.empty:
-        avg_ref = (ref_d['HY'].sum() + ref_d['AY'].sum()) / len(ref_d)
-        avg_lea = (df_stats['HY'].sum() + df_stats['AY'].sum()) / len(df_stats)
-        ref_factor = avg_ref / avg_lea
-        pred_cards = ((f1 + f2) / 6.5) * ref_factor
+        ref_avg = (ref_d['HY'].sum() + ref_d['AY'].sum()) / len(ref_d)
+        league_avg = (df_stats['HY'].sum() + df_stats['AY'].sum()) / len(df_stats)
+        ref_factor = ref_avg / league_avg
 
-# Simulación
-sim_c = np.random.poisson(pred_corners, 1500)
-prob_c = (sim_c > 9.5).mean() * 100
-
-sim_k = np.random.poisson(pred_cards, 1500)
-prob_k = (sim_k > 4.5).mean() * 100
-
-# --- DASHBOARD ---
-st.divider()
-t1, t2 = st.tabs(["🚩 Córners", "🟨 Tarjetas"])
-
-with t1:
-    c1, c2 = st.columns(2)
-    c1.metric("Línea Estimada", f"{pred_corners:.2f}")
-    c2.metric("Prob. Over 9.5", f"{prob_c:.1f}%")
+# --- 6. GENERACIÓN DEL REPORTE ---
+if analysis:
+    p_corn = analysis['pred_corners']
+    p_cards = (analysis['pred_fouls'] / 6.5) * ref_factor
     
-    if prob_c > 60:
-        st.info("📈 Tendencia: ALTA (Over)")
-    else:
-        st.write("📉 Tendencia: Baja/Normal")
-
-with t2:
-    k1, k2 = st.columns(2)
-    k1.metric("Tarjetas Est.", f"{pred_cards:.2f}")
-    k2.metric("Prob. Over 4.5", f"{prob_k:.1f}%")
+    # Simulación Montecarlo
+    sim_c = np.random.poisson(p_corn, 1000)
+    prob_c_95 = (sim_c > 9.5).mean() * 100
     
-    if referee:
-        st.caption(f"Árbitro estricto: x{ref_factor:.2f}")
+    sim_k = np.random.poisson(p_cards, 1000)
+    prob_k_45 = (sim_k > 4.5).mean() * 100
+
+    st.header("📊 Informe del Analista IA")
+    
+    tab1, tab2 = st.tabs(["🚩 Análisis de Córners", "🟨 Análisis Disciplinario"])
+    
+    with tab1:
+        c1, c2 = st.columns(2)
+        c1.metric("Línea Esperada", f"{p_corn:.2f}")
+        c2.metric("Prob. Over 9.5", f"{prob_c_95:.1f}%")
+        
+        st.markdown("#### 📝 ¿Por qué esta predicción?")
+        
+        # Lógica explicada
+        h_s = analysis['h_stats']
+        a_s = analysis['a_stats']
+        
+        # Razón 1: Potencia Local
+        txt_h = f"**{home_input} en casa** es {'muy agresivo' if h_s['c_for'] > 6 else 'moderado'} generando {h_s['c_for']:.1f} córners por partido."
+        
+        # Razón 2: Debilidad Visitante
+        txt_a = f"**{away_input} fuera** concede una media de {a_s['c_ag']:.1f} córners al rival."
+        
+        # Razón 3: Choque
+        verdict = ""
+        if p_corn > 10.5:
+            verdict = "🔥 **Conclusión:** Partido muy abierto. Se espera que ambos equipos ataquen y las defensas despejen mucho."
+            st.success(verdict)
+        elif p_corn < 9.0:
+            verdict = "🧊 **Conclusión:** Partido trabado. Las estadísticas sugieren juego en mediocampo y pocas llegadas a línea de fondo."
+            st.warning(verdict)
+        else:
+            verdict = "⚖️ **Conclusión:** Partido promedio. No hay una ventaja estadística clara."
+            st.info(verdict)
+            
+        st.markdown(f"""
+        *   {txt_h}
+        *   {txt_a}
+        *   La suma matemática de tendencias proyecta: **{p_corn:.2f}** saques de esquina.
+        """)
+
+    with tab2:
+        k1, k2 = st.columns(2)
+        k1.metric("Tarjetas Est.", f"{p_cards:.2f}")
+        k2.metric("Prob. Over 4.5", f"{prob_k_45:.1f}%")
+        
+        st.markdown("#### ⚖️ Factor Arbitral")
+        st.markdown(f"El árbitro es **{sel_ref}**.")
+        
+        if ref_factor > 1.1:
+            st.error(f"⚠️ **¡Cuidado!** Este árbitro es ESTRICTO. Saca un {((ref_factor-1)*100):.0f}% más de tarjetas que el promedio de la liga ({ref_avg:.2f} por partido).")
+        elif ref_factor < 0.9:
+            st.success(f"Este árbitro es PERMISIVO. Solo saca {ref_avg:.2f} tarjetas por partido (Promedio Liga: 4.0).")
+        else:
+            st.info(f"Árbitro estándar ({ref_avg:.2f} tarjetas/partido).")
+            
+        st.markdown(f"**Fricción esperada:** Se proyectan unas **{analysis['pred_fouls']:.0f} faltas** totales basadas en el estilo de los equipos.")
+
+else:
+    st.warning("No hay suficientes datos históricos para generar un reporte detallado de estos equipos.")

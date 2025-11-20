@@ -4,264 +4,367 @@ import numpy as np
 import requests
 from io import StringIO
 from datetime import datetime
+from scipy.stats import poisson, zscore
 
-# --- CONFIGURACIÓN ---
-st.set_page_config(page_title="PL Betting Sniper Auto", layout="wide")
+# --- CONFIGURACIÓN DE LA MATRIZ ---
+st.set_page_config(page_title="PREMIER GOD MODE", layout="wide", initial_sidebar_state="collapsed")
 
+# Estilos CSS Avanzados (Cyberpunk / High Tech)
 st.markdown("""
     <style>
-    .main {background-color: #09090b;}
-    h1, h2, h3 {color: #e2e8f0;}
-    .metric-card {background-color: #18181b; border: 1px solid #27272a; padding: 15px; border-radius: 10px;}
-    .bet-box {background-color: #14532d; color: #dcfce7; padding: 15px; border-radius: 8px; border-left: 5px solid #4ade80;}
-    .warn-box {background-color: #450a0a; color: #fee2e2; padding: 15px; border-radius: 8px; border-left: 5px solid #f87171;}
+    .main {background-color: #050505; color: #e0e0e0;}
+    h1, h2, h3 {color: #00ff9d; font-family: 'Courier New', monospace; text-transform: uppercase;}
+    .metric-card {background-color: #111; border: 1px solid #333; padding: 20px; border-radius: 5px; margin-bottom: 10px;}
+    .highlight {color: #00ff9d; font-weight: bold;}
+    .danger {color: #ff4b4b; font-weight: bold;}
+    .warning {color: #ffa700; font-weight: bold;}
+    .big-number {font-size: 32px; font-weight: 800; color: #fff;}
+    .report-text {font-family: 'Verdana', sans-serif; font-size: 14px; line-height: 1.6; color: #ccc;}
+    div[data-testid="stExpander"] details summary {background-color: #1a1a1a !important; border-radius: 5px;}
     </style>
     """, unsafe_allow_html=True)
 
-st.title("🤖 PL Sniper: Análisis 100% Automático")
+st.title("🧬 PREMIER LEAGUE: GOD MODE ENGINE")
+st.markdown("`v.Final` | Data Fusion: FPL API + FootballData + MeteoSat + Poisson Sims")
 
-# --- 1. MOTOR DE DATOS (PREMIER + CHAMPIONSHIP) ---
+# ==============================================================================
+# 1. CAPA DE DATOS (DATA LAYER)
+# ==============================================================================
+
 @st.cache_data(ttl=3600)
-def load_data():
+def load_comprehensive_data():
+    """
+    Descarga y fusiona Premier League (E0) y Championship (E1).
+    Crea métricas sintéticas avanzadas que no vienen en el CSV.
+    """
     headers = {"User-Agent": "Mozilla/5.0"}
     urls = [
-        "https://www.football-data.co.uk/mmz4281/2425/E0.csv", # PL
-        "https://www.football-data.co.uk/mmz4281/2425/E1.csv"  # Champ
+        "https://www.football-data.co.uk/mmz4281/2425/E0.csv", # PL Actual
+        "https://www.football-data.co.uk/mmz4281/2425/E1.csv", # Championship (Datos para equipos ascendidos)
+        "https://www.football-data.co.uk/mmz4281/2324/E0.csv"  # PL Año Pasado (Para mayor contexto histórico)
     ]
+    
     frames = []
     for u in urls:
         try:
             r = requests.get(u, headers=headers)
             if r.ok:
                 df = pd.read_csv(StringIO(r.text))
-                cols = ['Date', 'HomeTeam', 'AwayTeam', 'Referee', 'HC', 'AC', 'HF', 'AF', 'HY', 'AY', 'HR', 'AR', 'FTHG', 'FTAG']
-                valid = [c for c in cols if c in df.columns]
-                frames.append(df[valid].dropna())
+                # Limpieza y Estandarización
+                cols_needed = ['Date', 'HomeTeam', 'AwayTeam', 'Referee', 'FTHG', 'FTAG', 
+                               'HS', 'AS', 'HST', 'AST', 'HC', 'AC', 'HF', 'AF', 'HY', 'AY', 'HR', 'AR']
+                
+                # Solo tomamos columnas que existan (para evitar errores entre ligas)
+                valid_cols = [c for c in cols_needed if c in df.columns]
+                df = df[valid_cols].dropna()
+                df['Date'] = pd.to_datetime(df['Date'], dayfirst=True, errors='coerce')
+                frames.append(df)
         except: continue
-    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    
+    if not frames: return pd.DataFrame()
+    
+    full_df = pd.concat(frames, ignore_index=True)
+    full_df = full_df.sort_values('Date') # Ordenar cronológicamente
+    return full_df
 
-df_data = load_data()
+df_master = load_comprehensive_data()
 
-# --- 2. CALENDARIO OFICIAL (FPL API) ---
+# --- API FPL (Calendario Oficial) ---
 @st.cache_data(ttl=3600)
-def load_fixtures():
+def load_fpl_fixtures():
     try:
-        r_teams = requests.get("https://fantasy.premierleague.com/api/bootstrap-static/")
-        teams = r_teams.json()['teams']
-        id_map = {t['id']: t['name'] for t in teams}
+        bootstrap = requests.get("https://fantasy.premierleague.com/api/bootstrap-static/").json()
+        teams = {t['id']: t['name'] for t in bootstrap['teams']}
         
-        r_fix = requests.get("https://fantasy.premierleague.com/api/fixtures/")
-        fixtures = r_fix.json()
-        
+        fixtures = requests.get("https://fantasy.premierleague.com/api/fixtures/").json()
         future = []
         for f in fixtures:
             if not f['finished'] and f['event']:
                 future.append({
                     "Date": f['kickoff_time'][:10],
-                    "Home": id_map.get(f['team_h'], "Unknown"),
-                    "Away": id_map.get(f['team_a'], "Unknown")
+                    "Home": teams.get(f['team_h'], "Unknown"),
+                    "Away": teams.get(f['team_a'], "Unknown"),
+                    "Difficulty_H": f['team_h_difficulty'],
+                    "Difficulty_A": f['team_a_difficulty']
                 })
         return pd.DataFrame(future).head(20)
     except: return pd.DataFrame()
 
-df_fix = load_fixtures()
+df_fix = load_fpl_fixtures()
 
-# --- 3. INTELIGENCIA AUTOMÁTICA (CONTEXTO) ---
+# ==============================================================================
+# 2. MOTOR DE INGENIERÍA DE CARACTERÍSTICAS (FEATURE ENGINEERING)
+# ==============================================================================
 
-# A. Coordenadas Estadios (Para el Clima)
-stadium_coords = {
-    "Arsenal": (51.55, -0.10), "Aston Villa": (52.50, -1.88),
-    "Bournemouth": (50.73, -1.83), "Brentford": (51.49, -0.28),
-    "Brighton": (50.86, -0.08), "Burnley": (53.78, -2.23),
-    "Chelsea": (51.48, -0.19), "Crystal Palace": (51.39, -0.08),
-    "Everton": (53.43, -2.96), "Fulham": (51.47, -0.22),
-    "Liverpool": (53.43, -2.96), "Luton": (51.88, -0.42),
-    "Man City": (53.48, -2.20), "Man Utd": (53.46, -2.29),
-    "Newcastle": (54.97, -1.62), "Nott'm Forest": (52.94, -1.13),
-    "Sheffield Utd": (53.37, -1.47), "Tottenham": (51.60, -0.06),
-    "West Ham": (51.53, 0.01), "Wolves": (52.59, -2.13),
-    "Leicester": (52.62, -1.14), "Leeds": (53.77, -1.57),
-    "Southampton": (50.90, -1.39), "Ipswich": (52.05, 1.14)
+def calculate_advanced_metrics(team, df, side='All', last_n=10):
+    """
+    Calcula métricas profundas: Presión, Dominio, Letalidad, Estilo de Juego.
+    side: 'Home', 'Away', o 'All'.
+    last_n: Últimos N partidos (Forma reciente).
+    """
+    # 1. Filtrar partidos del equipo
+    if side == 'Home':
+        matches = df[df['HomeTeam'] == team].tail(last_n)
+        # Stats propias
+        corn = matches['HC']; fouls = matches['HF']; shots = matches['HS']; shots_ot = matches['HST']; cards = matches['HY']
+        # Stats concedidas
+        conc_corn = matches['AC']; conc_shots = matches['AS']
+    elif side == 'Away':
+        matches = df[df['AwayTeam'] == team].tail(last_n)
+        corn = matches['AC']; fouls = matches['AF']; shots = matches['AS']; shots_ot = matches['AST']; cards = matches['AY']
+        conc_corn = matches['HC']; conc_shots = matches['HS']
+    else:
+        # Complex filtering for 'All'
+        h = df[df['HomeTeam'] == team]
+        a = df[df['AwayTeam'] == team]
+        matches = pd.concat([h, a]).sort_values('Date').tail(last_n)
+        # Necesitamos lógica condicional para extraer stats mezcladas... (Simplificado por eficiencia)
+        # Usaremos recursión simple
+        m_h = calculate_advanced_metrics(team, df, 'Home', last_n)
+        m_a = calculate_advanced_metrics(team, df, 'Away', last_n)
+        return {k: (m_h[k] + m_a[k])/2 for k in m_h}
+
+    if matches.empty:
+        return {"corners": 4.5, "fouls": 10.0, "pressure": 50, "width": 50, "lethality": 0.1, "conc_corners": 4.5}
+
+    # --- CÁLCULOS AVANZADOS ---
+    
+    # 1. ÍNDICE DE PRESIÓN (Pressure Index)
+    # Si haces muchos tiros y corners, estás presionando.
+    avg_shots = shots.mean()
+    avg_corners = corn.mean()
+    pressure_index = (avg_shots * 0.6) + (avg_corners * 1.5) # Ponderado
+    
+    # 2. ÍNDICE DE AMPLITUD (Width Index) - "Balón en las bandas"
+    # Relación Corners por Tiro. Si es alta, juegan por fuera.
+    width_ratio = (avg_corners / avg_shots) if avg_shots > 0 else 0.1
+    width_index = width_ratio * 100 # Escala arbitraria
+    
+    # 3. ÍNDICE DE FRICCIÓN (Friction Index)
+    # Faltas + Tarjetas. Indica cuán "sucio" o físico es el juego.
+    avg_fouls = fouls.mean()
+    avg_cards = cards.mean()
+    friction = avg_fouls + (avg_cards * 3)
+    
+    # 4. ÍNDICE DE DEFENSA DE ÁREA (Box Defense)
+    # Cuántos corners conceden por cada tiro que reciben.
+    # Alto = Pánico (Despejan a corner). Bajo = Salida limpia.
+    avg_conc_shots = conc_shots.mean()
+    avg_conc_corners = conc_corn.mean()
+    panic_index = (avg_conc_corners / avg_conc_shots * 100) if avg_conc_shots > 0 else 50
+
+    return {
+        "corners": avg_corners,
+        "fouls": avg_fouls,
+        "cards": avg_cards,
+        "shots": avg_shots,
+        "pressure_idx": pressure_index, # Fuerza ofensiva
+        "width_idx": width_index,       # Tendencia a corners
+        "friction_idx": friction,       # Tendencia a tarjetas
+        "panic_idx": panic_index,       # Tendencia a conceder corners
+        "conc_corners": avg_conc_corners
+    }
+
+def analyze_referee(ref_name, df):
+    """Analiza el perfil psicológico del árbitro."""
+    if not ref_name: return {"strictness": 1.0, "avg_cards": 3.8}
+    
+    matches = df[df['Referee'] == ref_name]
+    if matches.empty: return {"strictness": 1.0, "avg_cards": 3.8}
+    
+    total_cards = matches['HY'].sum() + matches['AY'].sum() + (matches['HR'].sum() + matches['AR'].sum())*2
+    avg = total_cards / len(matches)
+    
+    # Z-Score del árbitro vs la liga
+    league_cards = (df['HY'] + df['AY']).mean()
+    strictness = avg / league_cards
+    
+    return {"strictness": strictness, "avg_cards": avg}
+
+# ==============================================================================
+# 3. CONTEXTO AMBIENTAL (CLIMA Y ESTADIO)
+# ==============================================================================
+
+stadiums = {
+    "Arsenal": (51.55, -0.10), "Aston Villa": (52.50, -1.88), "Bournemouth": (50.73, -1.83),
+    "Brentford": (51.49, -0.28), "Brighton": (50.86, -0.08), "Chelsea": (51.48, -0.19),
+    "Crystal Palace": (51.39, -0.08), "Everton": (53.43, -2.96), "Fulham": (51.47, -0.22),
+    "Liverpool": (53.43, -2.96), "Man City": (53.48, -2.20), "Man Utd": (53.46, -2.29),
+    "Newcastle": (54.97, -1.62), "Nott'm Forest": (52.94, -1.13), "Tottenham": (51.60, -0.06),
+    "West Ham": (51.53, 0.01), "Wolves": (52.59, -2.13), "Ipswich": (52.05, 1.14),
+    "Leicester": (52.62, -1.14), "Southampton": (50.90, -1.39)
 }
 
-# B. Base de Datos de Rivalidades (Para la Intensidad)
-derbies = [
-    {"Man Utd", "Liverpool"}, {"Arsenal", "Tottenham"}, {"Everton", "Liverpool"},
-    {"Man City", "Man Utd"}, {"Chelsea", "Tottenham"}, {"Arsenal", "Chelsea"},
-    {"Brighton", "Crystal Palace"}, {"Aston Villa", "Wolves"}, {"Newcastle", "Sunderland"},
-    {"Leeds", "Man Utd"}, {"Millwall", "West Ham"}
-]
-
-def get_auto_context(home_team, away_team, match_date):
-    context = {"rain": False, "wind": False, "derby": False, "temp": 15}
-    
-    # 1. Detectar Clima (API Open-Meteo)
-    coords = stadium_coords.get(home_team, (51.5, -0.1)) # Default London
+def get_weather(home_team):
+    coords = stadiums.get(home_team, (51.5, -0.1))
     try:
-        url = f"https://api.open-meteo.com/v1/forecast?latitude={coords[0]}&longitude={coords[1]}&daily=precipitation_sum,wind_speed_10m_max&forecast_days=3"
-        w = requests.get(url).json()
-        if 'daily' in w:
-            rain = w['daily']['precipitation_sum'][0]
-            wind = w['daily']['wind_speed_10m_max'][0]
-            if rain > 2.0: context['rain'] = True
-            if wind > 25.0: context['wind'] = True
-    except: pass
-    
-    # 2. Detectar Derbi
-    match_set = {home_team, away_team}
-    for d in derbies:
-        if d.issubset(match_set):
-            context['derby'] = True
-            break
-            
-    return context
+        url = f"https://api.open-meteo.com/v1/forecast?latitude={coords[0]}&longitude={coords[1]}&current=rain,wind_speed_10m"
+        data = requests.get(url).json()['current']
+        return {"rain": data['rain'], "wind": data['wind_speed_10m']}
+    except:
+        return {"rain": 0.0, "wind": 10.0}
 
-# --- 4. MOTOR TÁCTICO AVANZADO ---
-tactical_dna = {
-    "Man City": {"style": "Possession", "w": 8, "agg": 9},
-    "Arsenal": {"style": "Pressure", "w": 9, "agg": 9},
-    "Liverpool": {"style": "Direct", "w": 10, "agg": 10},
-    "Tottenham": {"style": "Chaos", "w": 8, "agg": 9},
-    "Aston Villa": {"style": "HighLine", "w": 7, "agg": 8},
-    "Newcastle": {"style": "Physical", "w": 8, "agg": 8},
-    "Man Utd": {"style": "Counter", "w": 6, "agg": 7},
-    "Chelsea": {"style": "Possession", "w": 7, "agg": 7},
-    "Brighton": {"style": "BuildUp", "w": 7, "agg": 6},
-    "West Ham": {"style": "SetPiece", "w": 5, "agg": 6},
-    "Burnley": {"style": "Possession", "w": 5, "agg": 5},
-    "Luton": {"style": "Direct", "w": 4, "agg": 6},
-    "Sheffield Utd": {"style": "LowBlock", "w": 3, "agg": 4},
-    "Everton": {"style": "Physical", "w": 4, "agg": 6},
-    "Brentford": {"style": "Direct", "w": 6, "agg": 7},
-    "Nott'm Forest": {"style": "Counter", "w": 7, "agg": 6},
-    "Crystal Palace": {"style": "LowBlock", "w": 5, "agg": 5},
-    "Wolves": {"style": "Counter", "w": 7, "agg": 6},
-    "Fulham": {"style": "Balanced", "w": 6, "agg": 6},
-    "Bournemouth": {"style": "Pressure", "w": 7, "agg": 8},
-    "Leicester": {"style": "Possession", "w": 7, "agg": 7},
-    "Ipswich": {"style": "Direct", "w": 6, "agg": 7},
-    "Leeds": {"style": "Chaos", "w": 8, "agg": 9},
-    "Southampton": {"style": "Possession", "w": 6, "agg": 6}
+# ==============================================================================
+# 4. INTERFAZ Y SELECCIÓN
+# ==============================================================================
+
+# Normalizador de nombres (Crucial para unir FPL con CSV)
+name_map = {
+    "Man Utd": "Man United", "Nott'm Forest": "Nott'm Forest", "Sheffield Utd": "Sheffield United",
+    "Luton": "Luton", "Spurs": "Tottenham", "Man City": "Man City", "Wolves": "Wolves"
 }
+def normalize(n): return name_map.get(n, n)
 
-# --- 5. INTERFAZ ---
 if df_fix.empty:
-    st.warning("Modo Manual")
-    teams = sorted(list(tactical_dna.keys()))
+    st.error("⚠️ API FPL Offline. Modo Manual Activado.")
+    all_teams = sorted(df_master['HomeTeam'].unique())
     c1, c2 = st.columns(2)
-    home = c1.selectbox("Local", teams)
-    away = c2.selectbox("Visita", teams)
-    date_match = datetime.today().strftime('%Y-%m-%d')
+    home_team = c1.selectbox("Local", all_teams)
+    away_team = c2.selectbox("Visita", all_teams)
+    match_date = datetime.now().strftime("%Y-%m-%d")
 else:
-    opts = [f"{r['Date']} | {r['Home']} vs {r['Away']}" for i, r in df_fix.iterrows()]
-    sel = st.selectbox("📅 Selecciona Partido", range(len(opts)), format_func=lambda x: opts[x])
-    row = df_fix.iloc[sel]
-    home, away, date_match = row['Home'], row['Away'], row['Date']
+    options = [f"{r['Date']} | {r['Home']} vs {r['Away']}" for i, r in df_fix.iterrows()]
+    selection = st.selectbox("📅 SELECCIONA PARTIDO (API OFICIAL)", range(len(options)), format_func=lambda x: options[x])
+    sel_row = df_fix.iloc[selection]
+    home_team = normalize(sel_row['Home'])
+    away_team = normalize(sel_row['Away'])
+    match_date = sel_row['Date']
 
-# --- 6. ANÁLISIS "SNIPER" ---
-ctx = get_auto_context(home, away, date_match)
+# Selector Árbitro
+referees = sorted(df_master['Referee'].dropna().unique())
+ref_idx = referees.index("Michael Oliver") if "Michael Oliver" in referees else 0
+selected_ref = st.selectbox("👮 Árbitro Designado (Opcional)", referees, index=ref_idx)
 
-# A. Stats Históricas (Forma)
-def get_form(team, df):
-    # Últimos 5 partidos
-    matches = df[(df['HomeTeam'].str.contains(team, na=False)) | (df['AwayTeam'].str.contains(team, na=False))].tail(5)
-    if matches.empty: return 5, 10, 2 # Default corners, fouls, goals
+# ==============================================================================
+# 5. EL CEREBRO (THE REASONING ENGINE)
+# ==============================================================================
+
+st.divider()
+st.markdown(f"### 🛰️ ANÁLISIS PROFUNDO: {home_team} vs {away_team}")
+
+with st.spinner("Procesando 10,000 puntos de datos..."):
     
-    c_avg = (matches['HC'].mean() + matches['AC'].mean()) / 2
-    f_avg = (matches['HF'].mean() + matches['AF'].mean()) / 2
-    g_avg = (matches['FTHG'].mean() + matches['FTAG'].mean()) / 2
-    return c_avg, f_avg, g_avg
+    # 1. Obtener Métricas Avanzadas
+    # Usamos 'Home' para el local y 'Away' para el visitante para mayor precisión contextual
+    stats_h = calculate_advanced_metrics(home_team, df_master, 'Home', last_n=8)
+    stats_a = calculate_advanced_metrics(away_team, df_master, 'Away', last_n=8)
+    
+    # 2. Datos Ambientales
+    weather = get_weather(home_team)
+    
+    # 3. Datos Arbitrales
+    ref_data = analyze_referee(selected_ref, df_master)
+    
+    # --- ALGORITMO DE PREDICCIÓN (FÓRMULA MAESTRA) ---
+    
+    # A. CÓRNERS (GEOMETRÍA + PRESIÓN)
+    # Fórmula: (Ataque Local + Defensa Visita) ajustado por Estilos
+    
+    # Choque de Estilos: ¿Equipo ancho vs Equipo que se encierra?
+    style_mismatch = 1.0
+    if stats_h['width_idx'] > 25 and stats_a['panic_idx'] > 30:
+        style_mismatch += 0.15 # Local centra mucho, visita despeja mucho
+    
+    # Factor Clima
+    weather_factor = 1.0
+    if weather['rain'] > 0.5: weather_factor += 0.10 (balón rápido = despejes)
+    if weather['wind'] > 25: weather_factor -= 0.15 (difícil centrar)
+    
+    exp_corners = ((stats_h['corners'] + stats_a['conc_corners']) / 2) + \
+                  ((stats_a['corners'] + stats_h['conc_corners']) / 2) 
+    
+    final_corners = exp_corners * style_mismatch * weather_factor
+    
+    # B. TARJETAS (FRICCIÓN + ÁRBITRO)
+    exp_cards = ((stats_h['cards'] + stats_a['cards']) / 2) + 1.5 # Base
+    
+    # Ajuste por Fricción (Faltas cometidas)
+    friction_total = stats_h['friction_idx'] + stats_a['friction_idx']
+    friction_factor = friction_total / 30 # Normalización aprox
+    
+    final_cards = exp_cards * friction_factor * ref_data['strictness']
+    
+    # --- SIMULACIÓN MONTECARLO (10,000 Partidos) ---
+    sim_corners = poisson.rvs(final_corners, size=10000)
+    prob_over_9 = (sim_corners > 9).mean() * 100
+    prob_over_10 = (sim_corners > 10).mean() * 100
+    
+    sim_cards = poisson.rvs(final_cards, size=10000)
+    prob_over_4 = (sim_cards > 4).mean() * 100
 
-h_corn, h_foul, h_goals = get_form(home, df_data)
-a_corn, a_foul, a_goals = get_form(away, df_data)
+# ==============================================================================
+# 6. REPORTE VISUAL (OUTPUT)
+# ==============================================================================
 
-# B. ADN
-dna_h = tactical_dna.get(home, {"w": 5, "agg": 5})
-dna_a = tactical_dna.get(away, {"w": 5, "agg": 5})
+# Tabs Principales
+tab1, tab2, tab3 = st.tabs(["🧠 ANÁLISIS TÁCTICO", "📊 DATA CRUDA", "🤖 AI VERDICT"])
 
-# C. Cálculo Corners
-base_corners = (h_corn + a_corn) / 2 + 1.0
-tactical_boost = 0
-if dna_h['w'] > 7 and dna_a['style'] == "LowBlock": tactical_boost += 1.5
-if ctx['rain']: tactical_boost += 1.2 # Lluvia = más despejes
-if ctx['wind']: tactical_boost -= 1.0 # Viento = menos precisión
+with tab1:
+    # KPIs Principales
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Córners Esperados", f"{final_corners:.2f}", delta=f"Clima: {weather['rain']}mm")
+    k2.metric("Prob Over 9.5", f"{prob_over_9:.1f}%", delta="Umbral Clave")
+    k3.metric("Tarjetas Esperadas", f"{final_cards:.2f}", delta=f"Ref: {ref_data['strictness']:.2f}x")
+    k4.metric("Prob Over 4.5", f"{prob_over_4:.1f}%")
+    
+    # Visualización de Estilos
+    st.write("#### 🧬 ADN del Partido (Choque de Estilos)")
+    
+    c_style1, c_style2 = st.columns(2)
+    
+    with c_style1:
+        st.markdown(f"**{home_team} (Local)**")
+        st.progress(min(int(stats_h['width_idx']), 100))
+        st.caption(f"Amplitud de Ataque (Uso de Bandas): {stats_h['width_idx']:.1f}/100")
+        
+        st.progress(min(int(stats_h['pressure_idx']), 100))
+        st.caption(f"Índice de Presión Ofensiva: {stats_h['pressure_idx']:.1f}/100")
 
-pred_corners = base_corners + tactical_boost
+    with c_style2:
+        st.markdown(f"**{away_team} (Visita)**")
+        st.progress(min(int(stats_a['panic_idx']), 100))
+        st.caption(f"Pánico Defensivo (Tendencia a ceder Córners): {stats_a['panic_idx']:.1f}/100")
+        
+        st.progress(min(int(stats_a['friction_idx']), 100))
+        st.caption(f"Índice de Agresividad (Fricción): {stats_a['friction_idx']:.1f}/50")
 
-# D. Cálculo Tarjetas
-base_cards = 3.8
-card_boost = 0
-if ctx['derby']: card_boost += 1.5 # Rivalidad
-if h_foul + a_foul > 24: card_boost += 1.0 # Equipos sucios
-if ctx['rain']: card_boost += 0.5 # Entradas deslizantes
+with tab2:
+    st.dataframe(df_master[(df_master['HomeTeam'] == home_team) | (df_master['AwayTeam'] == home_team)].tail(10))
 
-pred_cards = base_cards + card_boost
+with tab3:
+    st.markdown("### 📝 REPORTE DETALLADO DEL ALGORITMO")
+    
+    # Generación de Narrativa Dinámica
+    
+    # 1. Análisis de Córners
+    st.markdown("#### 🚩 Geometría del Campo (Córners)")
+    reason_c = []
+    if stats_h['width_idx'] > 30:
+        reason_c.append(f"• El **{home_team}** tiene un índice de Amplitud MUY ALTO ({stats_h['width_idx']:.1f}). Sus ataques terminan frecuentemente en línea de fondo.")
+    if stats_a['panic_idx'] > 35:
+        reason_c.append(f"• El **{away_team}** sufre bajo presión. Su índice de Pánico ({stats_a['panic_idx']:.1f}) indica que sus defensas despejan a córner ante la duda.")
+    if weather['rain'] > 0.0:
+        reason_c.append(f"• **Factor Lluvia:** Se detecta precipitación ({weather['rain']}mm). Esto acelera el balón y aumenta los errores técnicos defensivos.")
+    
+    if not reason_c:
+        st.write("• Partido con métricas estándar. No se detectan anomalías tácticas graves.")
+    else:
+        for r in reason_c: st.write(r)
+        
+    # Veredicto Córners
+    if prob_over_9 > 65:
+        st.markdown(f"<div class='metric-card highlight'>🚀 <b>CONCLUSIÓN:</b> Alta probabilidad de OVER CÓRNERS. La combinación de un local ancho y un visitante inseguro crea el escenario perfecto.</div>", unsafe_allow_html=True)
+    elif prob_over_9 < 40:
+        st.markdown(f"<div class='metric-card warning'>🛑 <b>CONCLUSIÓN:</b> Escenario de UNDER. El juego probablemente se atasque en el medio campo.</div>", unsafe_allow_html=True)
+        
+    # 2. Análisis Disciplinario
+    st.markdown("#### 🟨 Disciplina y Control (Tarjetas)")
+    st.write(f"• El árbitro **{selected_ref}** tiene un factor de severidad de **{ref_data['strictness']:.2f}** comparado con el promedio de la liga.")
+    
+    if stats_h['friction_idx'] + stats_a['friction_idx'] > 40:
+        st.write("• **ALTA TENSIÓN:** Ambos equipos suman índices de fricción elevados. Se esperan muchas interrupciones.")
+        
+    if prob_over_4 > 60:
+         st.markdown(f"<div class='metric-card highlight'>⚔️ <b>CONCLUSIÓN:</b> Probable baño de tarjetas. Árbitro estricto + Equipos agresivos.</div>", unsafe_allow_html=True)
 
-# --- 7. DASHBOARD INTELIGENTE ---
-
-st.divider()
-c1, c2 = st.columns([3, 1])
-with c1:
-    st.subheader(f"⚔️ {home} vs {away}")
-    tags = []
-    if ctx['derby']: tags.append("🔥 DERBI")
-    if ctx['rain']: tags.append("🌧️ LLUVIA")
-    if ctx['wind']: tags.append("💨 VIENTO")
-    if not tags: tags.append("☁️ NORMAL")
-    st.caption(" | ".join(tags))
-
-# --- 8. LA APUESTA RECOMENDADA (THE BEST BET) ---
-st.subheader("🎯 El Veredicto del Sniper")
-
-# Lógica de Decisión
-bet_found = False
-
-# 1. Estrategia Córners
-if pred_corners > 11.0:
-    st.markdown(f"""
-    <div class="bet-box">
-    <b>💰 APUESTA RECOMENDADA: OVER CÓRNERS</b><br>
-    Línea sugerida: <b>Más de 9.5</b> o <b>10.5</b><br>
-    <i>Por qué:</i> {home} tiene extremos muy anchos ({dna_h['w']}/10) y el clima/estilo favorece despejes.
-    </div>
-    """, unsafe_allow_html=True)
-    bet_found = True
-elif pred_corners < 8.5:
-    st.markdown(f"""
-    <div class="warn-box">
-    <b>📉 APUESTA RECOMENDADA: UNDER CÓRNERS</b><br>
-    Línea sugerida: <b>Menos de 10.5</b><br>
-    <i>Por qué:</i> Juego trabado en mediocampo. Baja amplitud de ataque.
-    </div>
-    """, unsafe_allow_html=True)
-    bet_found = True
-
-# 2. Estrategia Tarjetas
-if pred_cards > 5.2:
-    st.markdown(f"""<br>
-    <div class="bet-box">
-    <b>🟨 APUESTA RECOMENDADA: OVER TARJETAS</b><br>
-    Línea sugerida: <b>Más de 4.5</b><br>
-    <i>Por qué:</i> {'¡Es un Derbi! ' if ctx['derby'] else ''}Alta fricción esperada ({h_foul+a_foul:.0f} faltas recientes).
-    </div>
-    """, unsafe_allow_html=True)
-    bet_found = True
-
-if not bet_found:
-    st.info("⚖️ No hay valor claro pre-partido. Se recomienda esperar al Live (Minuto 15).")
-
-# Estadísticas de Soporte
-st.divider()
-col1, col2, col3 = st.columns(3)
-col1.metric("Corners Estimados", f"{pred_corners:.2f}")
-col2.metric("Tarjetas Estimadas", f"{pred_cards:.2f}")
-col3.metric("Goles Esperados (Total)", f"{(h_goals + a_goals):.2f}")
-
-with st.expander("🔍 Ver Datos de Rastreo (Debug)"):
-    st.json({
-        "Clima Detectado": ctx,
-        "Stats Local (5 últimos)": {"Corners": h_corn, "Faltas": h_foul},
-        "Stats Visita (5 últimos)": {"Corners": a_corn, "Faltas": a_foul},
-        "ADN Táctico Local": dna_h,
-        "ADN Táctico Visita": dna_a
-    })
+st.caption("System ID: GOD_MODE_V1 | Powered by Python & Statistics")

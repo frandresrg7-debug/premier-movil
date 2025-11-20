@@ -3,48 +3,44 @@ import pandas as pd
 import numpy as np
 import requests
 from io import StringIO
+from datetime import datetime
 
-# --- CONFIGURACIÓN DE ÉLITE ---
-st.set_page_config(page_title="PL Tactical OS", layout="wide")
+# --- CONFIGURACIÓN ---
+st.set_page_config(page_title="PL Betting Sniper Auto", layout="wide")
 
 st.markdown("""
     <style>
-    .main {background-color: #0e1117;}
-    h1 {color: #3b82f6;}
-    .stMetric {background-color: #1e293b; border-radius: 10px; padding: 10px; border: 1px solid #334155;}
-    .tactical-box {padding: 15px; background-color: #172554; border-radius: 8px; margin-bottom: 10px; border-left: 5px solid #3b82f6;}
+    .main {background-color: #09090b;}
+    h1, h2, h3 {color: #e2e8f0;}
+    .metric-card {background-color: #18181b; border: 1px solid #27272a; padding: 15px; border-radius: 10px;}
+    .bet-box {background-color: #14532d; color: #dcfce7; padding: 15px; border-radius: 8px; border-left: 5px solid #4ade80;}
+    .warn-box {background-color: #450a0a; color: #fee2e2; padding: 15px; border-radius: 8px; border-left: 5px solid #f87171;}
     </style>
     """, unsafe_allow_html=True)
 
-st.title("🧠 Tactical OS: Premier & Championship")
+st.title("🤖 PL Sniper: Análisis 100% Automático")
 
-# --- 1. BASE DE DATOS HÍBRIDA (PL + CHAMPIONSHIP) ---
+# --- 1. MOTOR DE DATOS (PREMIER + CHAMPIONSHIP) ---
 @st.cache_data(ttl=3600)
-def load_all_data():
+def load_data():
     headers = {"User-Agent": "Mozilla/5.0"}
-    
-    # Cargamos Premier (E0) y Championship (E1)
     urls = [
-        "https://www.football-data.co.uk/mmz4281/2425/E0.csv", # Premier
-        "https://www.football-data.co.uk/mmz4281/2425/E1.csv"  # Championship
+        "https://www.football-data.co.uk/mmz4281/2425/E0.csv", # PL
+        "https://www.football-data.co.uk/mmz4281/2425/E1.csv"  # Champ
     ]
-    
     frames = []
-    for url in urls:
+    for u in urls:
         try:
-            r = requests.get(url, headers=headers)
+            r = requests.get(u, headers=headers)
             if r.ok:
-                data = StringIO(r.text)
-                df = pd.read_csv(data)
-                cols = ['Date', 'HomeTeam', 'AwayTeam', 'Referee', 'HC', 'AC', 'HF', 'AF', 'HY', 'AY', 'HR', 'AR']
-                valid_cols = [c for c in cols if c in df.columns]
-                frames.append(df[valid_cols].dropna())
-        except:
-            continue
-            
-    if frames:
-        return pd.concat(frames, ignore_index=True)
-    return pd.DataFrame()
+                df = pd.read_csv(StringIO(r.text))
+                cols = ['Date', 'HomeTeam', 'AwayTeam', 'Referee', 'HC', 'AC', 'HF', 'AF', 'HY', 'AY', 'HR', 'AR', 'FTHG', 'FTAG']
+                valid = [c for c in cols if c in df.columns]
+                frames.append(df[valid].dropna())
+        except: continue
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+df_data = load_data()
 
 # --- 2. CALENDARIO OFICIAL (FPL API) ---
 @st.cache_data(ttl=3600)
@@ -66,171 +62,206 @@ def load_fixtures():
                     "Away": id_map.get(f['team_a'], "Unknown")
                 })
         return pd.DataFrame(future).head(20)
-    except:
-        return pd.DataFrame()
+    except: return pd.DataFrame()
 
-df_data = load_all_data()
 df_fix = load_fixtures()
 
-# --- 3. ADN TÁCTICO (BASE DE DATOS MANUAL) ---
-tactical_dna = {
-    "Man City": {"style": "Possession", "width": 6, "panic": 1, "aggression": 9},
-    "Arsenal": {"style": "High Press", "width": 8, "panic": 2, "aggression": 9},
-    "Liverpool": {"style": "Direct Attack", "width": 9, "panic": 3, "aggression": 10},
-    "Aston Villa": {"style": "High Line", "width": 7, "panic": 4, "aggression": 8},
-    "Tottenham": {"style": "Chaosball", "width": 7, "panic": 5, "aggression": 9},
-    "Newcastle": {"style": "Physical", "width": 8, "panic": 4, "aggression": 8},
-    "Man Utd": {"style": "Counter", "width": 6, "panic": 6, "aggression": 7},
-    "West Ham": {"style": "Counter/SetPiece", "width": 5, "panic": 7, "aggression": 6},
-    "Chelsea": {"style": "Possession", "width": 7, "panic": 4, "aggression": 8},
-    "Brighton": {"style": "Build Up", "width": 8, "panic": 3, "aggression": 7},
-    "Wolves": {"style": "Counter", "width": 8, "panic": 5, "aggression": 6},
-    "Fulham": {"style": "Balanced", "width": 6, "panic": 5, "aggression": 6},
-    "Bournemouth": {"style": "High Press", "width": 7, "panic": 5, "aggression": 7},
-    "Crystal Palace": {"style": "Low Block", "width": 5, "panic": 6, "aggression": 5},
-    "Brentford": {"style": "Set Piece/Direct", "width": 5, "panic": 6, "aggression": 6},
-    "Everton": {"style": "Low Block/Physical", "width": 4, "panic": 8, "aggression": 5},
-    "Nott'm Forest": {"style": "Low Block/Counter", "width": 7, "panic": 7, "aggression": 6},
-    "Luton": {"style": "Physical/LongBall", "width": 4, "panic": 9, "aggression": 5},
-    "Burnley": {"style": "Possession/Weak", "width": 5, "panic": 7, "aggression": 5},
-    "Sheffield United": {"style": "Low Block", "width": 3, "panic": 9, "aggression": 4},
-    "Leicester": {"style": "Possession", "width": 6, "panic": 5, "aggression": 7},
-    "Southampton": {"style": "Possession", "width": 5, "panic": 6, "aggression": 6},
-    "Ipswich": {"style": "Direct", "width": 6, "panic": 7, "aggression": 6},
-    "Leeds": {"style": "High Press", "width": 8, "panic": 5, "aggression": 8}
+# --- 3. INTELIGENCIA AUTOMÁTICA (CONTEXTO) ---
+
+# A. Coordenadas Estadios (Para el Clima)
+stadium_coords = {
+    "Arsenal": (51.55, -0.10), "Aston Villa": (52.50, -1.88),
+    "Bournemouth": (50.73, -1.83), "Brentford": (51.49, -0.28),
+    "Brighton": (50.86, -0.08), "Burnley": (53.78, -2.23),
+    "Chelsea": (51.48, -0.19), "Crystal Palace": (51.39, -0.08),
+    "Everton": (53.43, -2.96), "Fulham": (51.47, -0.22),
+    "Liverpool": (53.43, -2.96), "Luton": (51.88, -0.42),
+    "Man City": (53.48, -2.20), "Man Utd": (53.46, -2.29),
+    "Newcastle": (54.97, -1.62), "Nott'm Forest": (52.94, -1.13),
+    "Sheffield Utd": (53.37, -1.47), "Tottenham": (51.60, -0.06),
+    "West Ham": (51.53, 0.01), "Wolves": (52.59, -2.13),
+    "Leicester": (52.62, -1.14), "Leeds": (53.77, -1.57),
+    "Southampton": (50.90, -1.39), "Ipswich": (52.05, 1.14)
 }
 
-def get_dna(team_name):
-    for key in tactical_dna:
-        if key.lower() in team_name.lower() or team_name.lower() in key.lower():
-            return tactical_dna[key]
-    return {"style": "Unknown", "width": 5, "panic": 5, "aggression": 5}
+# B. Base de Datos de Rivalidades (Para la Intensidad)
+derbies = [
+    {"Man Utd", "Liverpool"}, {"Arsenal", "Tottenham"}, {"Everton", "Liverpool"},
+    {"Man City", "Man Utd"}, {"Chelsea", "Tottenham"}, {"Arsenal", "Chelsea"},
+    {"Brighton", "Crystal Palace"}, {"Aston Villa", "Wolves"}, {"Newcastle", "Sunderland"},
+    {"Leeds", "Man Utd"}, {"Millwall", "West Ham"}
+]
 
-# --- 4. INTERFAZ ---
-st.write("### 🛠️ Configuración Táctica")
+def get_auto_context(home_team, away_team, match_date):
+    context = {"rain": False, "wind": False, "derby": False, "temp": 15}
+    
+    # 1. Detectar Clima (API Open-Meteo)
+    coords = stadium_coords.get(home_team, (51.5, -0.1)) # Default London
+    try:
+        url = f"https://api.open-meteo.com/v1/forecast?latitude={coords[0]}&longitude={coords[1]}&daily=precipitation_sum,wind_speed_10m_max&forecast_days=3"
+        w = requests.get(url).json()
+        if 'daily' in w:
+            rain = w['daily']['precipitation_sum'][0]
+            wind = w['daily']['wind_speed_10m_max'][0]
+            if rain > 2.0: context['rain'] = True
+            if wind > 25.0: context['wind'] = True
+    except: pass
+    
+    # 2. Detectar Derbi
+    match_set = {home_team, away_team}
+    for d in derbies:
+        if d.issubset(match_set):
+            context['derby'] = True
+            break
+            
+    return context
 
-if not df_fix.empty:
-    opts = [f"{r['Date']} | {r['Home']} vs {r['Away']}" for i, r in df_fix.iterrows()]
-    sel = st.selectbox("📅 Calendario", range(len(opts)), format_func=lambda x: opts[x])
-    row = df_fix.iloc[sel]
-    home, away = row['Home'], row['Away']
-else:
+# --- 4. MOTOR TÁCTICO AVANZADO ---
+tactical_dna = {
+    "Man City": {"style": "Possession", "w": 8, "agg": 9},
+    "Arsenal": {"style": "Pressure", "w": 9, "agg": 9},
+    "Liverpool": {"style": "Direct", "w": 10, "agg": 10},
+    "Tottenham": {"style": "Chaos", "w": 8, "agg": 9},
+    "Aston Villa": {"style": "HighLine", "w": 7, "agg": 8},
+    "Newcastle": {"style": "Physical", "w": 8, "agg": 8},
+    "Man Utd": {"style": "Counter", "w": 6, "agg": 7},
+    "Chelsea": {"style": "Possession", "w": 7, "agg": 7},
+    "Brighton": {"style": "BuildUp", "w": 7, "agg": 6},
+    "West Ham": {"style": "SetPiece", "w": 5, "agg": 6},
+    "Burnley": {"style": "Possession", "w": 5, "agg": 5},
+    "Luton": {"style": "Direct", "w": 4, "agg": 6},
+    "Sheffield Utd": {"style": "LowBlock", "w": 3, "agg": 4},
+    "Everton": {"style": "Physical", "w": 4, "agg": 6},
+    "Brentford": {"style": "Direct", "w": 6, "agg": 7},
+    "Nott'm Forest": {"style": "Counter", "w": 7, "agg": 6},
+    "Crystal Palace": {"style": "LowBlock", "w": 5, "agg": 5},
+    "Wolves": {"style": "Counter", "w": 7, "agg": 6},
+    "Fulham": {"style": "Balanced", "w": 6, "agg": 6},
+    "Bournemouth": {"style": "Pressure", "w": 7, "agg": 8},
+    "Leicester": {"style": "Possession", "w": 7, "agg": 7},
+    "Ipswich": {"style": "Direct", "w": 6, "agg": 7},
+    "Leeds": {"style": "Chaos", "w": 8, "agg": 9},
+    "Southampton": {"style": "Possession", "w": 6, "agg": 6}
+}
+
+# --- 5. INTERFAZ ---
+if df_fix.empty:
+    st.warning("Modo Manual")
     teams = sorted(list(tactical_dna.keys()))
     c1, c2 = st.columns(2)
-    home = c1.selectbox("Local", teams, index=0)
-    away = c2.selectbox("Visita", teams, index=1)
+    home = c1.selectbox("Local", teams)
+    away = c2.selectbox("Visita", teams)
+    date_match = datetime.today().strftime('%Y-%m-%d')
+else:
+    opts = [f"{r['Date']} | {r['Home']} vs {r['Away']}" for i, r in df_fix.iterrows()]
+    sel = st.selectbox("📅 Selecciona Partido", range(len(opts)), format_func=lambda x: opts[x])
+    row = df_fix.iloc[sel]
+    home, away, date_match = row['Home'], row['Away'], row['Date']
 
-# --- 5. CONTEXTO AVANZADO ---
-with st.expander("🎛️ Ajustar Variables de Contexto (¡IMPORTANTE!)", expanded=True):
-    c1, c2, c3 = st.columns(3)
-    weather = c1.selectbox("🌦️ Clima", ["Normal", "Lluvia (Cancha Rápida)", "Viento Fuerte"])
-    importance = c2.selectbox("🏆 Importancia", ["Liga Normal", "Partido a Muerte/Derbi", "Intrascendente"])
-    missing_key = c3.checkbox("🚑 ¿Falta Jugador Clave en Defensa?")
+# --- 6. ANÁLISIS "SNIPER" ---
+ctx = get_auto_context(home, away, date_match)
 
-# --- 6. MOTOR DE CÁLCULO ---
-def analyze_game(h, a, context_weather, context_imp, context_miss):
+# A. Stats Históricas (Forma)
+def get_form(team, df):
+    # Últimos 5 partidos
+    matches = df[(df['HomeTeam'].str.contains(team, na=False)) | (df['AwayTeam'].str.contains(team, na=False))].tail(5)
+    if matches.empty: return 5, 10, 2 # Default corners, fouls, goals
     
-    # 1. Stats Históricas
-    def get_stats(team, df):
-        matches = df[(df['HomeTeam'].str.contains(team, na=False)) | (df['AwayTeam'].str.contains(team, na=False))]
-        if matches.empty: return 5.0, 10.0
-        c_avg = (matches['HC'].mean() + matches['AC'].mean()) / 2
-        f_avg = (matches['HF'].mean() + matches['AF'].mean()) / 2
-        return c_avg, f_avg
+    c_avg = (matches['HC'].mean() + matches['AC'].mean()) / 2
+    f_avg = (matches['HF'].mean() + matches['AF'].mean()) / 2
+    g_avg = (matches['FTHG'].mean() + matches['FTAG'].mean()) / 2
+    return c_avg, f_avg, g_avg
 
-    h_corn, h_foul = get_stats(h, df_data)
-    a_corn, a_foul = get_stats(a, df_data)
-    
-    # 2. ADN Táctico
-    dna_h = get_dna(h)
-    dna_a = get_dna(a)
-    
-    # 3. ALGORITMO CORNERS
-    pressure_h = (dna_h['width'] * 0.6) + (dna_h['aggression'] * 0.4)
-    resistance_a = dna_a['panic']
-    pressure_a = (dna_a['width'] * 0.6) + (dna_a['aggression'] * 0.4)
-    resistance_h = dna_h['panic']
-    
-    base_corners = (h_corn + a_corn) / 2 + 1.5
-    
-    tactical_factor = 1.0
-    if pressure_h > 7 and resistance_a > 6: tactical_factor += 0.15
-    if pressure_a > 7 and resistance_h > 6: tactical_factor += 0.10
-    if dna_h['style'] == "Possession" and dna_a['style'] == "Low Block": tactical_factor += 0.2
-        
-    # 4. Ajustes Contexto (Corrección del error anterior)
-    weather_mod = 1.0
-    if context_weather == "Lluvia (Cancha Rápida)": 
-        weather_mod = 1.1 
-    elif context_weather == "Viento Fuerte": 
-        weather_mod = 0.85 
-    
-    final_corners = base_corners * tactical_factor * weather_mod
-    
-    # 5. ALGORITMO TARJETAS
-    base_cards = 3.8
-    intensity_mod = 1.0
-    if context_imp == "Partido a Muerte/Derbi": intensity_mod = 1.3
-    if context_miss: intensity_mod += 0.1 
-    if dna_h['style'] == "Physical" or dna_a['style'] == "Physical": intensity_mod += 0.1
-    
-    final_cards = base_cards * intensity_mod
-    
-    return {
-        "corners": final_corners,
-        "cards": final_cards,
-        "dna_h": dna_h,
-        "dna_a": dna_a,
-        "tactical_factor": tactical_factor
-    }
+h_corn, h_foul, h_goals = get_form(home, df_data)
+a_corn, a_foul, a_goals = get_form(away, df_data)
 
-res = analyze_game(home, away, weather, importance, missing_key)
+# B. ADN
+dna_h = tactical_dna.get(home, {"w": 5, "agg": 5})
+dna_a = tactical_dna.get(away, {"w": 5, "agg": 5})
 
-# --- 7. DASHBOARD ---
+# C. Cálculo Corners
+base_corners = (h_corn + a_corn) / 2 + 1.0
+tactical_boost = 0
+if dna_h['w'] > 7 and dna_a['style'] == "LowBlock": tactical_boost += 1.5
+if ctx['rain']: tactical_boost += 1.2 # Lluvia = más despejes
+if ctx['wind']: tactical_boost -= 1.0 # Viento = menos precisión
+
+pred_corners = base_corners + tactical_boost
+
+# D. Cálculo Tarjetas
+base_cards = 3.8
+card_boost = 0
+if ctx['derby']: card_boost += 1.5 # Rivalidad
+if h_foul + a_foul > 24: card_boost += 1.0 # Equipos sucios
+if ctx['rain']: card_boost += 0.5 # Entradas deslizantes
+
+pred_cards = base_cards + card_boost
+
+# --- 7. DASHBOARD INTELIGENTE ---
+
 st.divider()
-
-c1, c2 = st.columns([1, 3])
+c1, c2 = st.columns([3, 1])
 with c1:
-    st.image("https://upload.wikimedia.org/wikipedia/en/f/f2/Premier_League_Logo.svg", width=80)
-with c2:
-    st.header(f"{home} vs {away}")
-    st.caption(f"Choque de Estilos: {res['dna_h']['style']} vs {res['dna_a']['style']}")
+    st.subheader(f"⚔️ {home} vs {away}")
+    tags = []
+    if ctx['derby']: tags.append("🔥 DERBI")
+    if ctx['rain']: tags.append("🌧️ LLUVIA")
+    if ctx['wind']: tags.append("💨 VIENTO")
+    if not tags: tags.append("☁️ NORMAL")
+    st.caption(" | ".join(tags))
 
-k1, k2, k3 = st.columns(3)
-k1.metric("🎯 Córners Esperados", f"{res['corners']:.2f}")
-k2.metric("⚠️ Intensidad (Tarjetas)", f"{res['cards']:.2f}")
-prob_c = (np.random.poisson(res['corners'], 1000) > 9.5).mean() * 100
-k3.metric("Prob. Over 9.5 Corners", f"{prob_c:.1f}%", delta="High Value" if prob_c > 60 else None)
+# --- 8. LA APUESTA RECOMENDADA (THE BEST BET) ---
+st.subheader("🎯 El Veredicto del Sniper")
 
-st.markdown("### 🕵️ Informe Táctico Detallado")
+# Lógica de Decisión
+bet_found = False
 
-with st.container():
+# 1. Estrategia Córners
+if pred_corners > 11.0:
     st.markdown(f"""
-    <div class="tactical-box">
-    <b>1. Análisis de Geometría del Partido:</b><br>
-    El <b>{home}</b> juega con un estilo <i>{res['dna_h']['style']}</i> y amplitud <b>{res['dna_h']['width']}/10</b>. 
-    Se enfrenta a <b>{away}</b> con Pánico Defensivo de <b>{res['dna_a']['panic']}/10</b>.
+    <div class="bet-box">
+    <b>💰 APUESTA RECOMENDADA: OVER CÓRNERS</b><br>
+    Línea sugerida: <b>Más de 9.5</b> o <b>10.5</b><br>
+    <i>Por qué:</i> {home} tiene extremos muy anchos ({dna_h['w']}/10) y el clima/estilo favorece despejes.
     </div>
     """, unsafe_allow_html=True)
-    
-    reasons = []
-    
-    if res['tactical_factor'] > 1.1:
-        reasons.append(f"🔥 **Mismatch Táctico:** {home} atacará por bandas y {away} tiende a despejar a córner bajo presión.")
-    elif res['tactical_factor'] < 1.0:
-        reasons.append(f"🛡️ **Bloqueo Mutuo:** Los estilos sugieren que el balón se atascará en mediocampo.")
-        
-    if weather == "Lluvia (Cancha Rápida)":
-        reasons.append("🌧️ **Factor Clima:** La lluvia provoca más despejes de seguridad (más corners).")
-    
-    if missing_key:
-        reasons.append("🚑 **Debilidad:** Falta de defensa clave = Más desorden y faltas.")
+    bet_found = True
+elif pred_corners < 8.5:
+    st.markdown(f"""
+    <div class="warn-box">
+    <b>📉 APUESTA RECOMENDADA: UNDER CÓRNERS</b><br>
+    Línea sugerida: <b>Menos de 10.5</b><br>
+    <i>Por qué:</i> Juego trabado en mediocampo. Baja amplitud de ataque.
+    </div>
+    """, unsafe_allow_html=True)
+    bet_found = True
 
-    for r in reasons:
-        st.write(r)
+# 2. Estrategia Tarjetas
+if pred_cards > 5.2:
+    st.markdown(f"""<br>
+    <div class="bet-box">
+    <b>🟨 APUESTA RECOMENDADA: OVER TARJETAS</b><br>
+    Línea sugerida: <b>Más de 4.5</b><br>
+    <i>Por qué:</i> {'¡Es un Derbi! ' if ctx['derby'] else ''}Alta fricción esperada ({h_foul+a_foul:.0f} faltas recientes).
+    </div>
+    """, unsafe_allow_html=True)
+    bet_found = True
 
-st.write("#### 📊 Distribución de Probabilidades")
-sim_data = pd.DataFrame(np.random.poisson(res['corners'], 1000), columns=["Corners"])
-st.bar_chart(sim_data['Corners'].value_counts().sort_index())
+if not bet_found:
+    st.info("⚖️ No hay valor claro pre-partido. Se recomienda esperar al Live (Minuto 15).")
 
-st.caption("Datos: FPL API + Football-Data Hybrid (E0/E1). Modelo: V4.")
+# Estadísticas de Soporte
+st.divider()
+col1, col2, col3 = st.columns(3)
+col1.metric("Corners Estimados", f"{pred_corners:.2f}")
+col2.metric("Tarjetas Estimadas", f"{pred_cards:.2f}")
+col3.metric("Goles Esperados (Total)", f"{(h_goals + a_goals):.2f}")
+
+with st.expander("🔍 Ver Datos de Rastreo (Debug)"):
+    st.json({
+        "Clima Detectado": ctx,
+        "Stats Local (5 últimos)": {"Corners": h_corn, "Faltas": h_foul},
+        "Stats Visita (5 últimos)": {"Corners": a_corn, "Faltas": a_foul},
+        "ADN Táctico Local": dna_h,
+        "ADN Táctico Visita": dna_a
+    })
